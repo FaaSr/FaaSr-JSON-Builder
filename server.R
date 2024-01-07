@@ -1,18 +1,59 @@
 library("shiny")
-library("DiagrammeR")
+library("visNetwork")
+library("shinyjs")
+library("shinyWidgets")
+library("jsonlite")
 
-server <- function(input, output) {
+source("dependencies/visnetwork_drawing.R")
+source("dependencies/visnetwork_dataframe.R")
+source("dependencies/helper.R")
+source("dependencies/render_ui_list.R")
+source("dependencies/action_button_delete.R")
+source("dependencies/action_button_apply.R")
+
+server <- function(input, output, session) {
+  
+  
+  
+  ##################################################
+  # JSON file upload/download/delete & Session close
+  #
+  ##################################################
   # json_data will be reactive
   json_data <- reactiveVal(NULL)  
   
+  # this is an upload button implementation. 
   # if there's input, set the json_data with given json file.
   observe({
     if (!is.null(input$file1)) {
       json_path <- input$file1$datapath
       json <- readLines(json_path)
-      json_data(json)
+      if (!jsonlite::validate(json)){
+        sendSweetAlert(
+          title = "JSON invalid!",
+          text = "Given JSON file is invalid",
+          type = "error"
+        )
+        json_data(NULL)
+      } else {
+        json_data(json)
+      }
     }
   })
+  
+  # this is a download button implementation. 
+  # if user pushes download button, it will create a json file with current json_data
+  output$downjson <- downloadHandler(
+    filename = function() {
+      "payload.json"
+    },
+    content = function(file) {
+      json_result <- json_data()
+      if (!is.null(json_result)) {
+        writeLines(json_result, file)
+      }
+    }
+  )
   
   # if user pushes file_del, it will remove json_data values
   observeEvent(input$file_del, {
@@ -29,6 +70,11 @@ server <- function(input, output) {
     #if (input$close > 0) stopApp()  
   })
   
+  # 
+  ##########################################
+  # renderUI configurations: repetitive UIs
+  # source: "render_ui_list.R"
+  ##########################################
   # ui1 is for select input for "FunctionList", "Data Server", "FaaS Server", and "General Configuration"
   output$ui1 <- renderUI({
     
@@ -39,73 +85,7 @@ server <- function(input, output) {
       json <- list()
     }
     
-    # create a uuid for Invocation ID
-    exampleid <- uuid::UUIDgenerate()
-    if (is.null(json$InvocationID)){
-      json$InvocationID <- exampleid
-    }
-    
-    # set the default value for Log folder name: FaaSrLog
-    if (is.null(json$FaaSrLog)){
-      json$FaaSrLog <- "FaaSrLog"
-    }
-    
-    # no selection will return nothing
-    if (is.null(input$select1))
-      return()
-    
-    switch (input$select1,
-            # if select1 is "FunctionList", give a text input for func_name
-            # and it calls ui5
-            "Functions" = list(
-              textInput("func_name", "Action Name:", placeholder= "Action_1"),
-              uiOutput("ui5")
-            ),
-            # if select1 is "Data Server", give a text input for data_name
-            # and it calls ui3
-            "Data Server" = list(
-              textInput("data_name", "Data Server Name:", placeholder = "Initial_data_server_name"),
-              uiOutput("ui3")
-            ),
-            # if select1 is "FaaS Server", give a text input for faas_name
-            # and it calls ui4
-            "FaaS Server" = list(
-              textInput("faas_name", "FaaS Server Name:", placeholder = "Initial_faas_server_name"),
-              uiOutput("ui4")
-            ),
-            # if select1 is "General Configuration", give text inputs and select inputs.
-            "General Configuration" = list(
-              selectInput("function_invoke", "First Function to be executed:", names(json$FunctionList), selected=json$FunctionInvoke),
-              selectInput("logging_data_server", "Logging Data Server to leave logs:", c("None",names(json$DataStores)), selected=json$LoggingDataStore),
-              selectInput("default_data_server", "Default Data Server to be used in put/get/arrow/log:", names(json$DataStores), selected=json$DefaultDataStore),
-              textInput("faasr_log", "Log file name(Optional, default=FaaSrLog):", value = json$FaaSrLog, placeholder = "FaaSrLog"),
-              textInput("invocation_id", "InvocationID(Optional, must follow UUID format):", value = json$InvocationID, placeholder = exampleid),
-              fluidRow(
-                column(6,
-                       actionButton("gen_apply", label = "Apply")),
-                column(6,
-                       div(style = "position:absolute;right:1em;", 
-                           actionButton("gen_delete", label = "Delete")))
-              )
-            )
-    )
-  })
-  
-  # ui5 is for action name
-  output$ui5 <- renderUI({
-    if (!is.null(json_data())) {
-      json <- jsonlite::fromJSON(json_data())
-    } else{
-      json <- list()
-    }
-    return(
-      list(
-        # it shows a text input for func_act
-        # it also calls ui2
-        textInput("func_act", "Function Name:", value= json$FunctionList[[input$func_name]]$FunctionName, placeholder = "function_1"),
-        uiOutput("ui2")
-      )
-    )
+    ui_1(input, output, session, json)
   })
   
   # ui2 is for FunctionList
@@ -117,24 +97,7 @@ server <- function(input, output) {
       json <- list()
     }
     
-    return(
-      list(
-        selectInput("func_faas", "Function FaaS Server:", names(json$ComputeServers), selected = json$FunctionList[[input$func_name]]$FaaSServer),
-        textAreaInput("func_args", "Function Arguments:", value = unretrieve(json$FunctionList[[input$func_name]]$Arguments), placeholder = "arg1=input1.csv,\narg2=input2.csv", height = "100px", resize = "vertical"),
-        textInput("func_next", "Next Actions to Invoke:", value = unretrieve(json$FunctionList[[input$func_name]]$InvokeNext), placeholder = "Action_2, Action_3"),
-        textInput("func_container", "Function's Action Container(Optional):", value= json$ActionContainers[[input$func_name]], placeholder = "faasr/github-actions-tidyverse"),
-        textInput("func_gh_repo", "Repository/Path, where the function is stored:", value = unretrieve(json$FunctionGitRepo[[input$func_act]]), placeholder = "username/reponame, https://url.git"),
-        textInput("func_gh_package", "Dependencies - Github Package for the function:", value = unretrieve(json$FunctionGitHubPackage[[input$func_act]]), placeholder = "username/package_reponame"),
-        textInput("func_cran_repo", "Dependencies - Repository/Path for the function:", value = unretrieve(json$FunctionCRANPackage[[input$func_act]]), placeholder = "CRAN_package_name, dplyr"),
-        fluidRow(
-          column(6,
-                 actionButton("func_apply", label = "Apply")),
-          column(6,
-                 div(style = "position:absolute;right:1em;", 
-                     actionButton("func_delete", label = "Delete")))
-        )
-      )
-    )
+    ui_2(input, output, session, json)
   })
   
   # ui3 is for data servers.
@@ -144,21 +107,7 @@ server <- function(input, output) {
     } else{
       json <- list()
     }
-    return(
-      list(
-        textInput("data_endpoint", "Data Server Endpoint(optional for s3):", value = json$DataStores[[input$data_name]]$Endpoint, placeholder = "https://play.min.io"),
-        textInput("data_bucket", "Data Server Bucket:", value = json$DataStores[[input$data_name]]$Bucket, placeholder = "my_bucket"),
-        textInput("data_region", "Data Server Region (optional for minio):", value = json$DataStores[[input$data_name]]$Region, placeholder = "us-east-1"),
-        textInput("data_writable", "Data Server Writable permission:", value = json$DataStores[[input$data_name]]$Writable, placeholder = "TRUE"),
-        fluidRow(
-          column(6,
-                 actionButton("data_apply", label = "Apply")),
-          column(6,
-                 div(style = "position:absolute;right:1em;", 
-                     actionButton("data_delete", label = "Delete")))
-        )
-      )
-    )
+    ui_3(input, output, session, json)
   })
   
   # ui4 is for faas servers
@@ -168,36 +117,23 @@ server <- function(input, output) {
     } else{
       json <- list()
     }
-    return(
-      list(
-        selectInput("faas_type", "Select type:", c("GitHubActions", "OpenWhisk", "Lambda"), selected = json$ComputeServers[[input$faas_name]]$FaaSType),
-        conditionalPanel(
-          condition = "input.faas_type == 'GitHubActions'",
-          textInput("faas_gh_user", "GitHubActions User name:", value = json$ComputeServers[[input$faas_name]]$UserName, placeholder = "user_name"),
-          textInput("faas_gh_repo", "GitHubActions Action Repository name:", value = json$ComputeServers[[input$faas_name]]$ActionRepoName, placeholder = "repo_name"),
-          textInput("faas_gh_ref", "GitHubActions Branch:", value = json$ComputeServers[[input$faas_name]]$Branch, placeholder = "main")
-        ),
-        conditionalPanel(
-          condition = "input.faas_type == 'Lambda'",
-          textInput("faas_ld_region", "Lambda Region:", value = json$ComputeServers[[input$faas_name]]$Region, placeholder = "us-east-1")
-        ),
-        conditionalPanel(
-          condition = "input.faas_type == 'OpenWhisk'",
-          textInput("faas_ow_end", "OpenWhisk Endpoint(Optional, default=IBMcloud):", value = json$ComputeServers[[input$faas_name]]$Endpoint, placeholder = "https://00.00.00.00"),
-          textInput("faas_ow_name", "OpenWhisk Namespace:", value = json$ComputeServers[[input$faas_name]]$Namespace, placeholder = "namespace_name"),
-          textInput("faas_ow_region", "OpenWhisk Region:", value = json$ComputeServers[[input$faas_name]]$Region, placeholder = "us-west")
-        ),
-        fluidRow(
-          column(6,
-                 actionButton("faas_apply", label = "Apply")),
-          column(6,
-                 div(style = "position:absolute;right:1em;", 
-                     actionButton("faas_delete", label = "Delete")))
-        )
-      )
-    )
+    ui_4(input, output, session, json)
   })
   
+  # ui5 is for action name
+  output$ui5 <- renderUI({
+    if (!is.null(json_data())) {
+      json <- jsonlite::fromJSON(json_data())
+    } else{
+      json <- list()
+    }
+    ui_5(input, output, session, json)
+  })
+  
+  ##################################
+  # Delete button configurations
+  # source: "action_button_delete.R"
+  ##################################
   # if user pushes func_delete button, it will remove that function.
   observeEvent(input$func_delete, {
     if (!is.null(json_data())) {
@@ -205,29 +141,7 @@ server <- function(input, output) {
     } else {
       json <- list()
     }
-    func_name <- input$func_name
-    if (is.null(func_name)){
-      return()
-    }
-    func_act <- json$FunctionList[[func_name]]$FunctionName
-    json$FunctionList[[func_name]] <- NULL
-    json$ActionContainers[[func_name]] <- NULL
-    func_set <- NULL
-    for (func in names(json$FunctionList)){
-      if (func != func_name){
-        func_set <- unique(c(func_set, json$FunctionList[[func]]$FunctionName))
-        if (func_name %in% json$FunctionList[[func]]$InvokeNext){
-          json$FunctionList[[func]]$InvokeNext <- json$FunctionList[[func]]$InvokeNext[json$FunctionList[[func]]$InvokeNext != func_name]
-        }
-      }
-    }
-    if (!func_act %in% func_set){
-      json$FunctionCRANPackage[[func_act]] <- NULL
-      json$FunctionGitHubPackage[[func_act]] <-NULL
-      json$FunctionGitRepo[[func_act]] <- NULL
-    }
-    json_source <- jsonlite::toJSON(json, auto_unbox=TRUE)
-    json_pretty <- jsonlite::prettify(json_source)
+    json_pretty <- ob_func_delete(input, output, session, json)
     json_data(json_pretty)
   })
   
@@ -238,13 +152,7 @@ server <- function(input, output) {
     } else {
       json <- list()
     }
-    faas_name <- input$faas_name
-    if (is.null(faas_name)){
-      return()
-    }
-    json$ComputeServers[[faas_name]] <- NULL
-    json_source <- jsonlite::toJSON(json, auto_unbox=TRUE)
-    json_pretty <- jsonlite::prettify(json_source)
+    json_pretty <- ob_faas_delete(input, output, session, json)
     json_data(json_pretty)
   })
   
@@ -255,13 +163,7 @@ server <- function(input, output) {
     } else {
       json <- list()
     }
-    data_name <- input$data_name
-    if (is.null(data_name)){
-      return()
-    }
-    json$DataStores[[data_name]] <- NULL
-    json_source <- jsonlite::toJSON(json, auto_unbox=TRUE)
-    json_pretty <- jsonlite::prettify(json_source)
+    json_pretty <- ob_data_delete(input, output, session, json)
     json_data(json_pretty)
   })
   
@@ -272,43 +174,33 @@ server <- function(input, output) {
     } else{
       json <- list()
     }
-    json$FunctionInvoke <- NULL
-    json$InvocationID <- NULL
-    json$FaaSrLog <- NULL
-    json$LoggingDataStore <- NULL
-    json$DefaultDataStore <- NULL
-    json_source <- jsonlite::toJSON(json, auto_unbox=TRUE)
-    json_pretty <- jsonlite::prettify(json_source)
+    json_pretty <- ob_gen_delete(input, output, session, json)
     json_data(json_pretty)
-    
   })
   
+  ##################################
+  # Apply button configurations
+  # source: "action_button_delete.R"
+  ##################################
   # if user pushes func_apply button, it will save the selected and text inputs into the json.
   observeEvent(input$func_apply, {
+    if (!is.null(test_func())){
+      return()
+    }
     if (!is.null(json_data())) {
       json <- jsonlite::fromJSON(json_data())
     } else{
       json <- list()
     }
-    func_name <- input$func_name
-    if (is.null(func_name)){
-      return()
-    }
-    json$FunctionList[[func_name]]$FunctionName <- input$func_act
-    json$FunctionList[[func_name]]$FaaSServer <- input$func_faas
-    json$FunctionList[[func_name]]$Arguments <- retrieve(input$func_args)
-    json$FunctionList[[func_name]]$InvokeNext <- retrieve(input$func_next)
-    json$ActionContainers[[func_name]] <- input$func_container
-    json$FunctionCRANPackage[[input$func_act]] <- retrieve(input$func_cran_repo)
-    json$FunctionGitHubPackage[[input$func_act]] <-retrieve(input$func_gh_package)
-    json$FunctionGitRepo[[input$func_act]] <- retrieve(input$func_gh_repo)
-    json_source <- jsonlite::toJSON(json, auto_unbox=TRUE)
-    json_pretty <- jsonlite::prettify(json_source)
+    json_pretty <- ob_func_apply(input, output, session, json)
     json_data(json_pretty)
   })
   
   # if user pushes faas_apply button, it will save the selected and text inputs into the json.
   observeEvent(input$faas_apply, {
+    if (!is.null(test_faas())){
+      return()
+    }
     if (!is.null(json_data())) {
       json <- jsonlite::fromJSON(json_data())
     } else{
@@ -318,46 +210,21 @@ server <- function(input, output) {
     if (is.null(faas_name)){
       return()
     }
-    json$ComputeServers[[faas_name]]$FaaSType <- input$faas_type
-    switch(json$ComputeServers[[faas_name]]$FaaSType,
-           "GitHubActions"={
-             json$ComputeServers[[faas_name]]$UserName <- input$faas_gh_user
-             json$ComputeServers[[faas_name]]$ActionRepoName <- input$faas_gh_repo
-             json$ComputeServers[[faas_name]]$Branch <- input$faas_gh_ref
-           },
-           "Lambda"={
-             json$ComputeServers[[faas_name]]$Region <- input$faas_ld_region
-           },
-           "OpenWhisk"={
-             json$ComputeServers[[faas_name]]$Endpoint <- input$faas_ow_end
-             json$ComputeServers[[faas_name]]$Namespace <- input$faas_ow_name
-             json$ComputeServers[[faas_name]]$Region <- input$faas_ow_region
-           }
-    )
-    json_source <- jsonlite::toJSON(json, auto_unbox=TRUE)
-    json_pretty <- jsonlite::prettify(json_source)
-    
+    json_pretty <- ob_faas_apply(input, output, session, json)
     json_data(json_pretty)
   })
   
   # if user pushes data_apply button, it will save the selected and text inputs into the json.
   observeEvent(input$data_apply, {
+    if (!is.null(test_data())){
+      return()
+    }
     if (!is.null(json_data())) {
       json <- jsonlite::fromJSON(json_data())
     } else{
       json <- list()
     }
-    data_name <- input$data_name
-    if (is.null(data_name)){
-      return()
-    }
-    json$DataStores[[data_name]]$Endpoint <- input$data_endpoint
-    json$DataStores[[data_name]]$Bucket <- input$data_bucket
-    json$DataStores[[data_name]]$Region <- input$data_region
-    json$DataStores[[data_name]]$Writable <- input$data_writable
-    json_source <- jsonlite::toJSON(json, auto_unbox=TRUE)
-    json_pretty <- jsonlite::prettify(json_source)
-    
+    json_pretty <- ob_data_apply(input, output, session, json)
     json_data(json_pretty)
   })
   
@@ -368,215 +235,409 @@ server <- function(input, output) {
     } else{
       json <- list()
     }
-    json$FunctionInvoke <- input$function_invoke
-    json$InvocationID <- input$invocation_id
-    json$FaaSrLog <- input$faasr_log
-    if (input$logging_data_server == "None"){
-      json$LoggingDataStore <- NULL
-    } else {
-      json$LoggingDataStore <- input$logging_data_server
-    }
-    json$DefaultDataStore <- input$default_data_server
-    json_source <- jsonlite::toJSON(json, auto_unbox=TRUE)
-    json_pretty <- jsonlite::prettify(json_source)
+    json_pretty <- ob_gen_apply(input, output, session, json)
     json_data(json_pretty)
     
   })
   
-  # this function is to convert the list into "a=b, c=d" form
-  unretrieve <- function(val){
-    if (!is.null(val)){
-      if (!is.list(val)){
-        val_merged_char <- NULL
-        for (val_key in val){
-          if (val_key == val[length(val)]){
-            val_merged_char <- paste0(val_merged_char, val_key)
-          } else {
-            val_merged_char <- paste0(val_merged_char, val_key,", ")
-          }
-        }
-        return(val_merged_char)
-      } else {
-        val_merged <- NULL
-        for (val_key in names(val)){
-          if (val_key == names(val[length(val)])){
-            val_merged <- paste0(val_merged, val_key, "=",val[[val_key]])
-          } else{
-            val_merged <- paste0(val_merged, val_key, "=",val[[val_key]], ",\n")  
-          }
-        }
-        return(val_merged)
-      }
-    } else {
-      return(val)
-    }
-  }
-  
-  # this function is to convert the "a=b, c=d" form into the list
-  retrieve <- function(val) {
-    if (!is.null(val)) {
-      val_list <- unlist(strsplit(strsplit(val, '\n')[[1]], ','))
-      text_list <- list()
-      for (text in val_list){
-        parts <- strsplit(text, '=')
-        if (length(parts[[1]])<2){
-          text_trim <- trimws(text)
-          text_list <- unlist(c(text_list, text_trim))
-        } else {
-          re_input_key <- trimws(gsub('[\'"]', '', parts[[1]][1]))
-          re_input_val <- trimws(gsub('[\'"]', '', parts[[1]][2]))
-          text_list[[re_input_key]] <- re_input_val
-        }
-      }
-      return(text_list)
-    } else {
-      return(val)
-    }
-  }
-  
-  # this is a download button implementation. 
-  # if user pushes download button, it will create a json file with current json_data
-  output$downjson <- downloadHandler(
-    filename = function() {
-      "payload.json"
-    },
-    content = function(file) {
-      json_result <- json_data()
-      if (!is.null(json_result)) {
-        writeLines(json_result, file)
-      }
-    }
-  )
-  
-  # fsm_func is a Finite State Machine for functions
-  output$fsm_func <- renderGrViz({
+  ##################################
+  # Make visnetwork data.frames
+  # source: "visnetwork.dataframe.R"
+  ##################################
+  # make data frames for drawing "Functions" figures
+  graph_func_name <- reactiveVal(NULL)
+  graph_func_edge <- reactiveVal(NULL)
+  observe({
     if (!is.null(json_data())) {
       json <- jsonlite::fromJSON(json_data())
     } else{
       json <- list()
     }
     
-    fsm_func_edge <- NULL
-    fsm_func_name <- NULL
-    fsm_first_func <- NULL
+    vis_func_list <- vis_df_func(input, output, session, json)
     
-    for (funcname in names(json$FunctionList)) {
-      if (!is.null(json$FunctionInvoke) && funcname == json$FunctionInvoke){
-        fsm_first_func <- paste0(funcname, " [label=<",funcname," <br/> <font color='red'><font point-size='25'> ",json$FunctionList[[funcname]]$FunctionName,"</font></font>>];")
-      } else{
-        fsm_func_name <- paste0(fsm_func_name,funcname, " [label=<",funcname," <br/> <font color='red'><font point-size='25'> ",json$FunctionList[[funcname]]$FunctionName,"</font></font>>];")
-      }
-      for (next_func in json$FunctionList[[funcname]]$InvokeNext){
-        if (next_func %in% names(json$FunctionList)){
-          fsm_func_edge <- paste0(fsm_func_edge,funcname,"->",next_func,";")
-        }
-      }
+    graph_func_name(vis_func_list$name)
+    graph_func_edge(vis_func_list$edge)
+  })
+  
+  # make data frames for drawing "Data server" figures
+  graph_data_name <- reactiveVal(NULL)
+  graph_data_edge <- reactiveVal(NULL)
+  observe({ 
+    if (!is.null(json_data())) {
+      json <- jsonlite::fromJSON(json_data())
+    } else{
+      json <- list()
     }
     
+    vis_data_list <- vis_df_data(input, output, session, json)
     
-    grViz(paste0("digraph{
-      graph[rankdir = LR, fontname=Helvetica];
-      subgraph cluster_0 {
-        graph[shape = rectangle];
-        style = rounded;
-        bgcolor = LemonChiffon;
-        color = LemonChiffon;
-        label = 'Functions';
-        node[width=3, fixedsize=false, fontsize=32, shape = doublecircle, style=filled, fontname=Helvetica, fillcolor=white, color=gray32];
-        ",fsm_first_func,"
-        node[width=3, fixedsize=false, fontsize=32, shape = circle, style=filled, fontname=Helvetica, fillcolor=white, color=white];
-        ",fsm_func_name,"
-      };
-      edge[color=black, arrowsize=1];
-      ",fsm_func_edge,"
-    }"))
+    graph_data_edge(vis_data_list$edge)
+    graph_data_name(vis_data_list$name)
+  })
+  
+  # make data frames for drawing "FaaS" figures
+  graph_faas_name <- reactiveVal(NULL)
+  graph_faas_edge <- reactiveVal(NULL)
+  observe({ 
+    if (!is.null(json_data())) {
+      json <- jsonlite::fromJSON(json_data())
+    } else{
+      json <- list()
+    }
+    
+    vis_faas_list <- vis_df_faas(input, output, session, json)
+    
+    graph_faas_name(vis_faas_list$name)
+    graph_faas_edge(vis_faas_list$edge)
+  })
+  
+  ################################
+  # Draw visnetwork figures
+  # source: "visnetwork.drawing.R"
+  ################################
+  # fsm_func is a Finite State Machine for functions
+  output$fsm_func <- renderVisNetwork({
+    if (!is.null(graph_func_edge)){
+      fsm_func_edge <- graph_func_edge()
+    } else{
+      fsm_func_edge <- data.frame()
+    }
+    
+    if (!is.null(graph_func_name)){
+      fsm_func_name <- graph_func_name()
+    } else{
+      fsm_func_name <- data.frame()
+    }
+    
+    vis_fig_func(fsm_func_name, fsm_func_edge)
     
   })
   
   # fsm_data is a drawing for data servers.
-  output$fsm_data <- renderGrViz({
-    if (!is.null(json_data())) {
-      json <- jsonlite::fromJSON(json_data())
+  output$fsm_data <- renderVisNetwork({
+    
+    if (!is.null(graph_data_name)){
+      fsm_data_name <- graph_data_name()
     } else{
-      json <- list()
+      fsm_data_name <- data.frame()
     }
     
-    fsm_data_name <- NULL
-    fsm_logging <- NULL
-    
-    for (dataname in names(json$DataStores)) {
-      if (!is.null(json$DefaultDataStore) && dataname == json$DefaultDataStore){
-        fsm_logging <- paste0(dataname," [label=",dataname,"];")
-      } else {
-        fsm_data_name <- paste0(fsm_data_name,dataname," [label=",dataname,"];")
-      }
+    if (!is.null(graph_data_edge)){
+      fsm_data_edge <- graph_data_edge()
+    } else{
+      fsm_data_edge <- data.frame()
     }
     
-    grViz(paste0("digraph{
-      graph[rankdir = LR, fontname=Helvetica];
-      subgraph cluster_1 {
-        graph[shape = rectangle];
-        style = rounded;
-        bgcolor = darkolivegreen3;
-        color = darkolivegreen3;
-        label = 'Data Servers';
-        node[width=3, fixedsize=shape, fontsize=16, shape = folder, style=filled, fontname=Helvetica, fillcolor=white, color=gray32];
-        ",fsm_logging,"
-        node[width=3, fixedsize=shape, fontsize=16, shape = folder, style=filled, fontname=Helvetica, fillcolor=white, color=white];
-        ",fsm_data_name,"
-      };
-    }"))
+    vis_fig_data(fsm_data_name, fsm_data_edge)
     
   })
   
-  # fsm_faas is a drawing for faas servers.
-  output$fsm_faas <- renderGrViz({
-    if (!is.null(json_data())) {
-      json <- jsonlite::fromJSON(json_data())
+  # draw a graph for FaaS servers
+  output$fsm_faas <- renderVisNetwork({
+    
+    if (!is.null(graph_faas_name)){
+      fsm_faas_name <- graph_faas_name()
     } else{
-      json <- list()
+      fsm_faas_name <- data.frame()
     }
     
-    fsm_faas_name <- NULL
-    
-    
-    for (faasname in names(json$ComputeServers)) {
-      fsm_faas_name <- paste0(fsm_faas_name,faasname," [label=",faasname,"];")
+    if (!is.null(graph_faas_edge)){
+      fsm_faas_edge <- graph_faas_edge()
+    } else{
+      fsm_faas_edge <- data.frame
     }
     
-    grViz(paste0("digraph{
-      graph[rankdir = LR, fontname=Helvetica];
-      subgraph cluster_1 {
-        graph[shape = rectangle];
-        style = rounded;
-        bgcolor = Lightskyblue;
-        label = 'FaaS Servers';
-        color=Lightskyblue;
-        node[width=3, fixedsize=shape, fontsize=16, shape = tab, style=filled, fontname=Helvetica, fillcolor=white, color=white];
-        ",fsm_faas_name,"
-      };
-    }"))
-    
+    vis_fig_faas(fsm_faas_name, fsm_faas_edge) 
   })
   
+  ############################################
+  # Reactive visnetwork figures configurations
+  # source: "visnetwork.drawing.R"
+  #         "visnetwork.dataframe.R"
+  ############################################
   # This is to implement user friendly functions.
   # If user clicks the drawings, it will show the data on the left.
   observe({
-    req(input$fsm_func_click)
-    new_func <- input$fsm_func_click$nodeValues[[1]]
-    updateTextInput(inputId="func_name", value=trimws(new_func, "right"))
+    # require function node click
+    req(input$func_click)
+    
+    # get viz df
+    if (!is.null(graph_func_edge)){
+      fsm_func_edge <- graph_func_edge()
+    } else{
+      fsm_func_edge <- data.frame()
+    }
+    
+    if (!is.null(graph_func_name)){
+      fsm_func_name <- graph_func_name()
+    } else{
+      fsm_func_name <- data.frame()
+    }
+    
+    # if no node is selected, call original figure
+    if (length(input$func_click$nodes)==0){
+      output$fsm_func <- renderVisNetwork({
+        vis_fig_func(fsm_func_name, fsm_func_edge)
+      })
+      return("")
+    } 
+    
+    # if a node is selected, update the values
     updateSelectInput(inputId="select1", selected="Functions")
+    new_nodes <- input$func_click$nodes[[1]]
+    updateTextInput(inputId="func_name", value=new_nodes)
+    
+    # edit groups
+    fsm_func_name <- vis_df_select_func(fsm_func_name, new_nodes)
+    
+    # call "selected" function figure
+    output$fsm_func <- renderVisNetwork({
+      vis_fig_func_select(fsm_func_name, fsm_func_edge)
+    })
   })
+  
   observe({
-    req(input$fsm_faas_click)
-    new_faas <- input$fsm_faas_click$nodeValues[[1]]
-    updateTextInput(inputId="faas_name", value=new_faas)
+    # require faas node click
+    req(input$faas_click)
+    # if no node is selected, do nothing
+    if (length(input$faas_click$nodes)==0){
+      return("")
+    } 
+    
+    # if a node is selected, update "selected" figure
     updateSelectInput(inputId="select1", selected="FaaS Server")
+    new_faas <- input$faas_click$nodes[[1]]
+    updateTextInput(inputId="faas_name", value=new_faas)
+    
+    if (!is.null(graph_func_edge)){
+      fsm_func_edge <- graph_func_edge()
+    } else{
+      fsm_func_edge <- data.frame()
+    }
+    
+    if (!is.null(graph_func_name)){
+      fsm_func_name <- graph_func_name()
+    } else{
+      fsm_func_name <- data.frame()
+    }
+    
+    new_nodes <- fsm_func_name[fsm_func_name$server == new_faas, "id"]
+    
+    # edit groups
+    fsm_func_name <- vis_df_select_func(fsm_func_name, new_nodes)
+    
+    output$fsm_func <- renderVisNetwork({
+      vis_fig_func_select(fsm_func_name, fsm_func_edge)
+    })
   })
+  
   observe({
-    req(input$fsm_data_click)
-    new_data <- input$fsm_data_click$nodeValues[[1]]
-    updateTextInput(inputId="data_name", value=new_data)
+    # require data node click
+    req(input$data_click)
+    # if no node is selected, do nothing
+    if (length(input$data_click$nodes)==0){
+      return("")
+    } 
+    
+    # if a node is selected, update the values
     updateSelectInput(inputId="select1", selected="Data Server")
+    new_data <- input$data_click$nodes[[1]]
+    updateTextInput(inputId="data_name", value=new_data)
+  })
+  
+  ################################
+  # Sweet warning configurations
+  # source: 
+  ################################
+  # This is a helper function.
+  # Because of "get", this should reside in the "server.R"
+  alert_js_module <- function(type, msg, name, on=TRUE){
+    func <- get(type)
+    func(msg)
+    if (on) {
+      runjs(paste0("$('#",name,"').on('click.x', function(e){e.preventDefault();});"))
+    } else {
+      runjs(paste0("$('#",name,"').off('click.x');"))
+    }
+  } 
+  
+  alert_module <- function(title, text){
+    sendSweetAlert(
+      title = HTML('<div style="color: gray; font-size: 23px; text-align: center;">', title,
+                   'Configuration incomplete!</div><br><div style="color: #FF5733 ;', 
+                   'font-size: 15px; text-align: center;">Required:&nbsp</div>'),
+      text = HTML('<span style="color: gray; font-size: 18px;">',text,'</span'),
+      type = "error",
+      html = TRUE
+    )
+  }
+  
+  # Check general configuration requirements
+  test_gen <- reactiveVal("General Configuration incomplete")
+  observe({
+    gen_text <- NULL
+    if (is.null(input$function_invoke) || input$function_invoke == ""){
+      gen_text <- paste(gen_text, "First Function<br>")
+    }
+    if (is.null(input$default_data_server) || input$default_data_server == ""){
+      gen_text <- paste(gen_text, "Default Data Server<br>")
+    }
+    
+    if (is.null(gen_text)) {
+      alert_js_module("test_gen", gen_text, "genapp", on=FALSE)
+    } else {
+      alert_js_module("test_gen", gen_text, "genapp")
+    }
+  })
+  
+  # Send general configuration warning message
+  observeEvent(input[["gen_app"]], {
+    if(!is.null(test_gen())){
+      alert_module("General", as.character(test_gen()))
+    }
+  })
+  
+  # Check Data server requirements
+  test_data <- reactiveVal("Data Server Configuration incomplete")
+  observe({
+    data_text <- NULL
+    if (is.null(input$data_name) || input$data_name == ""){
+      data_text <- paste(data_text, "Data Server Name<br>")
+    } 
+    if (is.null(input$data_bucket) || input$data_bucket == ""){
+      data_text <- paste(data_text, "Data Server Bucket<br>")
+    } 
+    if (is.null(input$data_writable) || input$data_writable == ""){
+      data_text <- paste(data_text, "Data Server Permission<br>")
+    } 
+    
+    if (is.null(data_text)) {
+      alert_js_module("test_data", data_text, "dataapp", on=FALSE)
+    } else {
+      alert_js_module("test_data", data_text, "dataapp")
+    }
+  })
+  
+  # Send data stores configuration warning message
+  observeEvent(input[["data_app"]], {
+    if(!is.null(test_data())){
+      alert_module("Data Server", as.character(test_data()))
+    }
+  })
+  
+  # Check Functions requirements
+  test_func <- reactiveVal("Function Configuration incomplete")
+  observe({
+    func_text <- NULL
+    if (is.null(input$func_name) || input$func_name == ""){
+      func_text <- paste(func_text, "Action Name<br>")
+    } 
+    if (is.null(input$func_act) || input$func_act == ""){
+      func_text <- paste(func_text, "Function Name<br>")
+    } 
+    if (is.null(input$func_faas) || input$func_faas == ""){
+      func_text <- paste(func_text, "Function's FaaS Server<br>")
+    }
+    
+    if (is.null(func_text)) {
+      alert_js_module("test_func", func_text, "funcapp", on=FALSE)
+    } else {
+      alert_js_module("test_func", func_text, "funcapp")
+    }
+  })
+  
+  # Send functions configuration warning message
+  observeEvent(input[["func_app"]], {
+    if(!is.null(test_func())){
+      alert_module("Functions", as.character(test_func()))
+    }
+  })
+  
+  # Check FaaS server requirements
+  test_faas <- reactiveVal("FaaS Server configuration incomplete")
+  observe({
+    faas_text <- NULL
+    type <- input$faas_type
+    
+    if (is.null(input$faas_name) || input$faas_name == ""){
+      faas_text <- paste(faas_text, "FaaS Name<br>")
+    } 
+    if (is.null(input$faas_type) || input$faas_type == ""){
+      faas_text <- paste(faas_text, "FaaS Type<br>")    
+    } else{
+      if (type=="GitHubActions"){
+        if (is.null(input$faas_gh_user) || input$faas_gh_user == ""){
+          faas_text <- paste(faas_text, "Github User name<br>")
+        } 
+        if (is.null(input$faas_gh_repo) || input$faas_gh_repo == ""){
+          faas_text <- paste(faas_text, "Github Repo name<br>")
+        } 
+      } else if (type == "OpenWhisk"){
+        if (is.null(input$faas_ow_end) || input$faas_ow_end == ""){
+          faas_text <- paste(faas_text, "OpenWhisk Endpoint<br>")
+        } 
+        if (is.null(input$faas_ow_name) || input$faas_ow_name == ""){
+          faas_text <- paste(faas_text, "Openwhisk Namespace<br>")
+        }
+      } else if (type == "Lambda"){
+        if (is.null(input$faas_ld_region) || input$faas_ld_region == ""){
+          faas_text <- paste(faas_text, "Lambda Region<br>")
+        } 
+      }
+    }
+    
+    if (is.null(faas_text)) {
+      alert_js_module("test_faas", faas_text, "faasapp", on=FALSE)
+    } else {
+      alert_js_module("test_faas", faas_text, "faasapp")
+    }
+    
+  })
+  
+  # Send faas servers configuration warning message
+  observeEvent(input[["faas_app"]], {
+    if(!is.null(test_faas())){
+      alert_module("FaaS Server", as.character(test_faas()))
+    }
+  })
+  
+  # Check JSON validations
+  test <- reactiveVal("JSON format incomplete")  
+  observeEvent(json_data(), {
+    json <- jsonlite::fromJSON(json_data())
+    json_text <- NULL
+    
+    if (is.null(json$FunctionInvoke) || json$FunctionInvoke == ""){
+      json_text <- paste(json_text, "First Function<br>")
+    } 
+    if (is.null(json$DefaultDataStore) || json$DefaultDataStore == ""){
+      json_text <- paste(json_text, "Default Data Server<br>")
+    } 
+    if (length(names(json$ComputeServer))==0){
+      json_text <- paste(json_text, "At least one FaaS Server<br>")
+    } 
+    if (length(names(json$DataStore))==0){
+      json_text <- paste(json_text, "At least one Data Server<br>")
+    } 
+    if (length(names(json$FunctionList))==0){
+      json_text <- paste(json_text, "At least one Function<br>")
+    }
+    
+    if (is.null(json_text)) {
+      alert_js_module("test", json_text, "dwnbutton", on=FALSE)
+    } else {
+      alert_js_module("test", json_text, "dwnbutton")
+    }
+    
+  })
+  
+  # Send download warning message
+  observeEvent(input[["dwnClicked"]], {
+    if(!is.null(test())){
+      alert_module("JSON", as.character(test()))
+    }
   })
 }
+
+
